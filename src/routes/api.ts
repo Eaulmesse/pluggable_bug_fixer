@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { BugFixerAgent, createBugFixerAgent } from '../agents/bugFixer';
+import { createGitHubService } from '../services/github';
 import { createEmailService } from '../services/email';
 import { logger } from '../utils/logger';
-import { Issue } from '../types';
 
 // Store agents per repository
 const agents: Map<string, BugFixerAgent> = new Map();
@@ -42,28 +42,40 @@ router.get('/health', async (req, res) => {
 
 // NEW: Analyze a specific issue with full repo context
 router.post('/analyze', async (req, res) => {
-  const { repositoryUrl, issue } = req.body;
+  const { issueUrl } = req.body;
 
-  if (!repositoryUrl) {
-    return res.status(400).json({ error: 'Missing repositoryUrl in body' });
+  if (!issueUrl) {
+    return res.status(400).json({ error: 'Missing issueUrl in body. Format: https://github.com/owner/repo/issues/123' });
   }
 
-  if (!issue || !issue.number || !issue.title) {
+  // Parse issue URL to extract owner, repo, and issue number
+  const urlMatch = issueUrl.match(/github\.com\/([^\/]+)\/([^\/]+)\/(?:issues|pull)\/(\d+)/);
+  if (!urlMatch) {
     return res.status(400).json({ 
-      error: 'Missing or invalid issue object. Required: number, title, body (optional)' 
+      error: 'Invalid issueUrl format. Expected: https://github.com/owner/repo/issues/123 or https://github.com/owner/repo/pull/123' 
     });
   }
+
+  const [, owner, repo, issueNumber] = urlMatch;
+  const repositoryUrl = `https://github.com/${owner}/${repo}`;
 
   try {
-    logger.info(`🔍 Analyzing issue #${issue.number}`, { 
-      repository: repositoryUrl,
-      title: issue.title 
-    });
+    logger.info(`🔍 Fetching issue #${issueNumber} from ${owner}/${repo}`);
 
+    // Get or create agent for this repository
     const agent = getOrCreateAgent(repositoryUrl);
     
-    // Process the specific issue
-    const proposal = await agent.analyzeSingleIssue(issue as Issue);
+    // Fetch issue details from GitHub
+    const github = createGitHubService(repositoryUrl);
+    const issue = await github.getIssue(parseInt(issueNumber, 10));
+
+    logger.info(`📋 Analyzing issue #${issue.number}`, { 
+      title: issue.title,
+      labels: issue.labels 
+    });
+
+    // Process the specific issue with full repo context
+    const proposal = await agent.analyzeSingleIssue(issue);
 
     if (!proposal) {
       return res.json({
@@ -74,6 +86,7 @@ router.post('/analyze', async (req, res) => {
         issue: {
           number: issue.number,
           title: issue.title,
+          url: issueUrl,
         },
       });
     }
@@ -82,6 +95,11 @@ router.post('/analyze', async (req, res) => {
       success: true,
       analyzed: true,
       proposalCreated: true,
+      issue: {
+        number: issue.number,
+        title: issue.title,
+        url: issueUrl,
+      },
       proposal: {
         id: proposal.id,
         issueNumber: proposal.issueNumber,
@@ -94,7 +112,7 @@ router.post('/analyze', async (req, res) => {
     });
 
   } catch (error: any) {
-    logger.error('Failed to analyze issue', { error, issueNumber: issue.number });
+    logger.error('Failed to analyze issue', { error, issueUrl });
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to analyze issue',
