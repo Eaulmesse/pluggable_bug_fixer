@@ -6,13 +6,14 @@ import { logger } from '../utils/logger';
 // Store agents per repository (in production, use Redis or database)
 const agents: Map<string, BugFixerAgent> = new Map();
 
-function getOrCreateAgent(repositoryUrl: string, labels?: string[]): BugFixerAgent {
-  const cacheKey = `${repositoryUrl}_${labels?.join(',') || 'all'}`;
+function getOrCreateAgent(repositoryUrl: string, labels?: string[], limit?: number): BugFixerAgent {
+  const cacheKey = `${repositoryUrl}_${labels?.join(',') || 'all'}_${limit || 'unlimited'}`;
   if (!agents.has(cacheKey)) {
     const agent = createBugFixerAgent({
       repositoryUrl,
       workingDir: `./repos/${repositoryUrl.replace(/[^a-zA-Z0-9]/g, '_')}`,
       labels: labels && labels.length > 0 ? labels : undefined,  // Fetch all if no labels
+      limit: limit,
     });
     agents.set(cacheKey, agent);
   }
@@ -161,13 +162,14 @@ router.post('/validate/:proposalId/reject', async (req, res) => {
 router.post('/scan', async (req, res) => {
   const repositoryUrl = req.body.repo || req.query.repo;
   const labels = req.body.labels || req.query.labels;
+  const limit = req.body.limit || req.query.limit;
 
   if (!repositoryUrl) {
     return res.status(400).json({ error: 'Missing repository URL (body.repo or query.repo)' });
   }
 
   try {
-    logger.info(`Triggering manual scan`, { repositoryUrl, labels: labels || 'all' });
+    logger.info(`Triggering manual scan`, { repositoryUrl, labels: labels || 'all', limit: limit || 'unlimited' });
 
     // Parse labels if provided
     let labelArray: string[] | undefined;
@@ -175,18 +177,28 @@ router.post('/scan', async (req, res) => {
       labelArray = typeof labels === 'string' ? labels.split(',') : labels;
     }
 
-    const agent = getOrCreateAgent(repositoryUrl, labelArray);
+    // Parse limit if provided
+    let limitNumber: number | undefined;
+    if (limit) {
+      limitNumber = parseInt(limit as string, 10);
+      if (isNaN(limitNumber) || limitNumber < 1) {
+        return res.status(400).json({ error: 'Invalid limit parameter (must be a positive number)' });
+      }
+    }
 
-    // Run scan asynchronously
-    agent.scanAndAnalyze().catch((error) => {
+    const agent = getOrCreateAgent(repositoryUrl, labelArray, limitNumber);
+
+    // Run scan asynchronously with limit
+    agent.scanAndAnalyze(limitNumber).catch((error) => {
       logger.error('Scan failed', { error, repositoryUrl });
     });
 
     res.json({
       success: true,
-      message: `Scan triggered${labelArray ? ` with labels: ${labelArray.join(', ')}` : ' (all issues)'}. Check email for proposals.`,
+      message: `Scan triggered${labelArray ? ` with labels: ${labelArray.join(', ')}` : ' (all issues)'}${limitNumber ? `, limited to ${limitNumber} issues` : ''}. Check email for proposals.`,
       repository: repositoryUrl,
       labels: labelArray || 'all',
+      limit: limitNumber || 'unlimited',
     });
   } catch (error: any) {
     logger.error('Failed to trigger scan', { error, repositoryUrl });

@@ -53,9 +53,9 @@ export class GitHubService {
     return { owner: parts[0], repo: parts[1] };
   }
 
-  async getIssues(labels?: string[]): Promise<Issue[]> {
+  async getIssues(labels?: string[], limit?: number): Promise<Issue[]> {
     try {
-      logger.info(`Fetching issues for ${this.owner}/${this.repo}`, { labels: labels || 'all' });
+      logger.info(`Fetching issues for ${this.owner}/${this.repo}`, { labels: labels || 'all', limit: limit || 'unlimited' });
 
       const params: any = {
         owner: this.owner,
@@ -63,6 +63,7 @@ export class GitHubService {
         state: 'open',
         sort: 'updated',
         direction: 'desc',
+        per_page: limit || 100,  // GitHub max is 100 per page
       };
 
       // Only add labels filter if specified
@@ -70,7 +71,12 @@ export class GitHubService {
         params.labels = labels.join(',');
       }
 
-      const { data } = await this.octokit.rest.issues.listForRepo(params);
+      let { data } = await this.octokit.rest.issues.listForRepo(params);
+
+      // Apply limit if specified
+      if (limit && limit < data.length) {
+        data = data.slice(0, limit);
+      }
 
       return (data as GitHubIssue[]).map((issue: GitHubIssue) => ({
         number: issue.number,

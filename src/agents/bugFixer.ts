@@ -15,6 +15,7 @@ interface BugFixerConfig {
   repositoryUrl: string;
   workingDir: string;
   labels?: string[];  // Optional - if not set, fetch all issues
+  limit?: number;     // Optional - max number of issues to analyze (default: all)
 }
 
 export class BugFixerAgent {
@@ -33,12 +34,13 @@ export class BugFixerAgent {
     this.testRunner = createTestRunnerService(config.workingDir);
   }
 
-  async scanAndAnalyze(): Promise<void> {
+  async scanAndAnalyze(limit?: number): Promise<void> {
     try {
-      logger.info('🔍 Starting scan and analyze cycle');
+      const analysisLimit = limit || this.config.limit;
+      logger.info('🔍 Starting scan and analyze cycle', { limit: analysisLimit || 'unlimited' });
 
-      // Fetch issues (all issues if no labels specified)
-      const issues = await this.github.getIssues(this.config.labels);
+      // Fetch issues (all issues if no labels specified, with optional limit)
+      const issues = await this.github.getIssues(this.config.labels, analysisLimit);
       logger.info(`Found ${issues.length} issues to analyze`);
 
       for (const issue of issues) {
