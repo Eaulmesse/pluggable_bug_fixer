@@ -1,86 +1,52 @@
 import express from 'express';
 import { config } from './config';
 import { getIssue, getFileContent, getDirectoryContents } from './services/github';
-import { analyzeIssue } from './services/llm';
+import { identifyRequiredFiles, analyzeIssue } from './services/llm';
 import { sendAnalysisEmail } from './services/email';
 import { logger } from './logger';
 
 const app = express();
 app.use(express.json());
 
-// Code récupéré avec limite de profondeur et de fichiers
-async function gatherCodeContext(owner: string, repo: string, issue: any): Promise<string> {
-  const context: string[] = [];
-  const processedFiles = new Set<string>();
+// Récupère la structure du repo (uniquement les noms de fichiers/répertoires)
+async function getRepoStructure(owner: string, repo: string, path: string = '', depth: number = 0): Promise<string> {
+  if (depth > 3) return '';
   
-  // 1. Lire les fichiers de config
-  const configFiles = ['README.md', 'Cargo.toml', 'package.json', 'go.mod', 'pyproject.toml'];
-  for (const file of configFiles) {
-    const content = await getFileContent(owner, repo, file);
-    if (content) context.push(`\n=== ${file} ===\n${content.substring(0, 1000)}`);
-  }
-
-  // 2. Explorer récursivement tous les dossiers
-  async function exploreDir(path: string, depth: number): Promise<void> {
-    if (depth > 3 || processedFiles.size > 50) return; // Limite: 3 niveaux, 50 fichiers
+  const items = await getDirectoryContents(owner, repo, path);
+  let structure = '';
+  
+  for (const item of items) {
+    if (['node_modules', 'target', '.git', 'dist', 'build'].includes(item.name)) {
+      continue;
+    }
     
-    const items = await getDirectoryContents(owner, repo, path);
+    const indent = '  '.repeat(depth);
+    structure += `${indent}${item.type === 'dir' ? '📁' : '📄'} ${item.path}\n`;
     
-    for (const item of items) {
-      if (processedFiles.has(item.path)) continue;
-      
-      if (item.type === 'dir') {
-        // Ignorer les dossiers inutiles
-        if (['node_modules', 'target', '.git', 'dist', 'build'].some(skip => item.name === skip)) {
-          continue;
-        }
-        await exploreDir(item.path, depth + 1);
-      } else if (item.type === 'file') {
-        // Ne garder que les fichiers source
-        if (isSourceFile(item.name)) {
-          const content = await getFileContent(owner, repo, item.path);
-          if (content) {
-            // Tronquer les gros fichiers
-            let truncated = content;
-            if (content.length > 2000) {
-              truncated = content.substring(0, 1000) + '\n\n... [truncated] ...\n\n' + content.substring(content.length - 500);
-            }
-            context.push(`\n=== ${item.path} ===\n${truncated}`);
-            processedFiles.add(item.path);
-          }
-        }
-      }
+    if (item.type === 'dir') {
+      const subStructure = await getRepoStructure(owner, repo, item.path, depth + 1);
+      structure += subStructure;
     }
   }
   
-  await exploreDir('', 0);
+  return structure;
+}
+
+// Récupère le contenu des fichiers spécifiques
+async function getFilesContent(owner: string, repo: string, filePaths: string[]): Promise<string> {
+  const contents: string[] = [];
   
-  // 3. Chercher les fichiers mentionnés dans l'issue et les ajouter en priorité
-  const mentionedFiles = extractFileReferences(issue.title + ' ' + issue.body);
-  for (const filePath of mentionedFiles) {
-    if (!processedFiles.has(filePath)) {
-      const content = await getFileContent(owner, repo, filePath);
-      if (content) {
-        context.unshift(`\n=== ${filePath} (mentioned in issue) ===\n${content.substring(0, 2000)}`);
-        processedFiles.add(filePath);
-      }
+  for (const filePath of filePaths) {
+    const content = await getFileContent(owner, repo, filePath);
+    if (content) {
+      contents.push(`\n=== ${filePath} ===\n${content}`);
     }
   }
   
-  return context.join('\n');
+  return contents.join('\n');
 }
 
-function isSourceFile(filename: string): boolean {
-  const exts = ['.rs', '.ts', '.js', '.py', '.go', '.java', '.cpp', '.c', '.h', '.cs', '.php'];
-  return exts.some(ext => filename.toLowerCase().endsWith(ext));
-}
-
-function extractFileReferences(text: string): string[] {
-  const matches = text.match(/[\w\/]+\.(?:rs|ts|js|py|go|java|cpp|c|h|cs|php)/g) || [];
-  return [...new Set(matches)];
-}
-
-// Route principale: analyser une issue
+// Route principale: analyser une issue avec récupération intelligente des fichiers
 app.post('/analyze', async (req, res) => {
   const { issueUrl } = req.body;
   
@@ -98,41 +64,76 @@ app.post('/analyze', async (req, res) => {
   const repoUrl = `https://github.com/${owner}/${repo}`;
   
   try {
-    logger.info(`Processing issue #${issueNumber} from ${owner}/${repo}`);
+    logger.info(`🔍 Processing issue #${issueNumber} from ${owner}/${repo}`);
     
-    // 1. Récupérer l'issue
+    // ÉTAPE 1: Récupérer l'issue
     const issue = await getIssue(owner, repo, parseInt(issueNumber));
-    logger.info(`Issue retrieved: ${issue.title}`);
+    logger.info(`📋 Issue: ${issue.title}`);
     
-    // 2. Récupérer le code contexte (TOUT le repo)
-    logger.info('Gathering code context...');
-    const codeContext = await gatherCodeContext(owner, repo, issue);
-    logger.info(`Context gathered: ${codeContext.length} chars`);
+    // ÉTAPE 2: Récupérer la structure du repo (uniquement les noms)
+    logger.info('📁 Getting repository structure...');
+    const repoStructure = await getRepoStructure(owner, repo);
+    logger.info(`Found repository structure (${repoStructure.split('\n').length} items)`);
     
-    // 3. Analyser avec LLM
+    // ÉTAPE 3: L'IA identifie quels fichiers sont nécessaires
+    logger.info('🤖 Identifying required files...');
+    const requiredFiles = await identifyRequiredFiles(issue, repoStructure);
+    logger.info(`Required files: ${requiredFiles.length > 0 ? requiredFiles.join(', ') : 'None identified'}`);
+    
+    // ÉTAPE 4: Récupérer le contenu des fichiers identifiés + fichiers mentionnés dans l'issue
+    const mentionedFiles = extractFileReferences(issue.title + ' ' + issue.body);
+    const allFilesToFetch = [...new Set([...requiredFiles, ...mentionedFiles])];
+    
+    logger.info(`📄 Fetching ${allFilesToFetch.length} specific files...`);
+    let codeContext = await getFilesContent(owner, repo, allFilesToFetch);
+    
+    // Si aucun fichier spécifique n'a été trouvé, récupérer quelques fichiers clés
+    if (!codeContext) {
+      logger.info('No specific files found, fetching key files...');
+      const keyFiles = ['README.md', 'Cargo.toml', 'package.json'];
+      for (const file of keyFiles) {
+        const content = await getFileContent(owner, repo, file);
+        if (content) {
+          codeContext += `\n=== ${file} ===\n${content.substring(0, 1000)}\n`;
+        }
+      }
+    }
+    
+    logger.info(`Total context size: ${codeContext.length} chars`);
+    
+    // ÉTAPE 5: Analyser avec le contexte complet
+    logger.info('🧠 Analyzing with full context...');
     const result = await analyzeIssue(issue, codeContext);
-    logger.info(`Analysis complete: shouldFix=${result.shouldFix}, confidence=${result.confidence}`);
+    logger.info(`✅ Analysis: shouldFix=${result.shouldFix}, confidence=${result.confidence}`);
     
-    // 4. Envoyer email
+    // ÉTAPE 6: Envoyer email
     await sendAnalysisEmail(issue, repoUrl, result);
     
     res.json({
       success: true,
       issue: { number: issue.number, title: issue.title },
+      filesAnalyzed: allFilesToFetch.length,
       analysis: {
         shouldFix: result.shouldFix,
         confidence: result.confidence,
         reason: result.reason,
         proposedChanges: result.codeChanges?.length || 0,
       },
+      filesRequested: requiredFiles,
+      filesMentioned: mentionedFiles,
     });
     
   } catch (error: any) {
-    logger.error('Analysis failed', error);
+    logger.error('❌ Analysis failed', error);
     res.status(500).json({ error: error.message });
   }
 });
 
+function extractFileReferences(text: string): string[] {
+  const matches = text.match(/[\w\/]+\.(?:rs|ts|js|py|go|java|cpp|c|h|cs|php)/g) || [];
+  return [...new Set(matches)];
+}
+
 app.listen(config.app.port, () => {
-  logger.info(`Server running on port ${config.app.port}`);
+  logger.info(`🚀 Server running on port ${config.app.port}`);
 });
