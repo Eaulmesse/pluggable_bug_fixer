@@ -6,16 +6,17 @@ import { logger } from '../utils/logger';
 // Store agents per repository (in production, use Redis or database)
 const agents: Map<string, BugFixerAgent> = new Map();
 
-function getOrCreateAgent(repositoryUrl: string): BugFixerAgent {
-  if (!agents.has(repositoryUrl)) {
+function getOrCreateAgent(repositoryUrl: string, labels?: string[]): BugFixerAgent {
+  const cacheKey = `${repositoryUrl}_${labels?.join(',') || 'all'}`;
+  if (!agents.has(cacheKey)) {
     const agent = createBugFixerAgent({
       repositoryUrl,
       workingDir: `./repos/${repositoryUrl.replace(/[^a-zA-Z0-9]/g, '_')}`,
-      labels: ['bug', 'help wanted'],
+      labels: labels && labels.length > 0 ? labels : undefined,  // Fetch all if no labels
     });
-    agents.set(repositoryUrl, agent);
+    agents.set(cacheKey, agent);
   }
-  return agents.get(repositoryUrl)!;
+  return agents.get(cacheKey)!;
 }
 
 const router = Router();
@@ -43,16 +44,24 @@ router.get('/health', async (req, res) => {
 // List pending proposals
 router.get('/proposals', (req, res) => {
   const repositoryUrl = req.query.repo as string;
+  const labels = req.query.labels as string;
 
   if (!repositoryUrl) {
     return res.status(400).json({ error: 'Missing repository URL (?repo=owner/repo)' });
   }
 
-  const agent = getOrCreateAgent(repositoryUrl);
+  // Parse labels if provided
+  let labelArray: string[] | undefined;
+  if (labels) {
+    labelArray = labels.split(',').map(l => l.trim()).filter(Boolean);
+  }
+
+  const agent = getOrCreateAgent(repositoryUrl, labelArray);
   const proposals = agent.getPendingProposals();
 
   res.json({
     repository: repositoryUrl,
+    labels: labelArray || 'all',
     proposals: proposals.map((p) => ({
       id: p.id,
       issueNumber: p.issueNumber,
@@ -68,12 +77,19 @@ router.get('/proposals', (req, res) => {
 router.get('/proposals/:proposalId', (req, res) => {
   const { proposalId } = req.params;
   const repositoryUrl = req.query.repo as string;
+  const labels = req.query.labels as string;
 
   if (!repositoryUrl) {
     return res.status(400).json({ error: 'Missing repository URL (?repo=owner/repo)' });
   }
 
-  const agent = getOrCreateAgent(repositoryUrl);
+  // Parse labels if provided
+  let labelArray: string[] | undefined;
+  if (labels) {
+    labelArray = labels.split(',').map(l => l.trim()).filter(Boolean);
+  }
+
+  const agent = getOrCreateAgent(repositoryUrl, labelArray);
   const proposal = agent.getProposal(proposalId);
 
   if (!proposal) {
@@ -144,15 +160,22 @@ router.post('/validate/:proposalId/reject', async (req, res) => {
 // Manual scan trigger
 router.post('/scan', async (req, res) => {
   const repositoryUrl = req.body.repo || req.query.repo;
+  const labels = req.body.labels || req.query.labels;
 
   if (!repositoryUrl) {
     return res.status(400).json({ error: 'Missing repository URL (body.repo or query.repo)' });
   }
 
   try {
-    logger.info(`Triggering manual scan`, { repositoryUrl });
+    logger.info(`Triggering manual scan`, { repositoryUrl, labels: labels || 'all' });
 
-    const agent = getOrCreateAgent(repositoryUrl);
+    // Parse labels if provided
+    let labelArray: string[] | undefined;
+    if (labels) {
+      labelArray = typeof labels === 'string' ? labels.split(',') : labels;
+    }
+
+    const agent = getOrCreateAgent(repositoryUrl, labelArray);
 
     // Run scan asynchronously
     agent.scanAndAnalyze().catch((error) => {
@@ -161,8 +184,9 @@ router.post('/scan', async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Scan triggered. Check email for proposals.',
+      message: `Scan triggered${labelArray ? ` with labels: ${labelArray.join(', ')}` : ' (all issues)'}. Check email for proposals.`,
       repository: repositoryUrl,
+      labels: labelArray || 'all',
     });
   } catch (error: any) {
     logger.error('Failed to trigger scan', { error, repositoryUrl });

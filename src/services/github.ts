@@ -53,18 +53,24 @@ export class GitHubService {
     return { owner: parts[0], repo: parts[1] };
   }
 
-  async getIssues(labels: string[] = ['bug', 'help wanted']): Promise<Issue[]> {
+  async getIssues(labels?: string[]): Promise<Issue[]> {
     try {
-      logger.info(`Fetching issues for ${this.owner}/${this.repo}`, { labels });
+      logger.info(`Fetching issues for ${this.owner}/${this.repo}`, { labels: labels || 'all' });
 
-      const { data } = await this.octokit.rest.issues.listForRepo({
+      const params: any = {
         owner: this.owner,
         repo: this.repo,
         state: 'open',
-        labels: labels.join(','),
         sort: 'updated',
         direction: 'desc',
-      });
+      };
+
+      // Only add labels filter if specified
+      if (labels && labels.length > 0) {
+        params.labels = labels.join(',');
+      }
+
+      const { data } = await this.octokit.rest.issues.listForRepo(params);
 
       return (data as GitHubIssue[]).map((issue: GitHubIssue) => ({
         number: issue.number,

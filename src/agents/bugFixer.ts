@@ -14,7 +14,7 @@ const execAsync = promisify(exec);
 interface BugFixerConfig {
   repositoryUrl: string;
   workingDir: string;
-  labels: string[];
+  labels?: string[];  // Optional - if not set, fetch all issues
 }
 
 export class BugFixerAgent {
@@ -37,7 +37,7 @@ export class BugFixerAgent {
     try {
       logger.info('🔍 Starting scan and analyze cycle');
 
-      // Fetch issues
+      // Fetch issues (all issues if no labels specified)
       const issues = await this.github.getIssues(this.config.labels);
       logger.info(`Found ${issues.length} issues to analyze`);
 
