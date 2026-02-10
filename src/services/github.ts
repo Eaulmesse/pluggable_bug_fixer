@@ -36,21 +36,24 @@ export class GitHubService {
   }
 
   private parseRepositoryUrl(url: string): { owner: string; repo: string } {
-    // Handle both full URL and owner/repo format
-    if (url.includes('github.com')) {
-      const match = url.match(/github\.com\/([^\/]+)\/([^\/]+)/);
+    // Clean URL - remove trailing paths like /issues, /pulls, etc.
+    const cleanUrl = url.replace(/\/issues.*$/, '').replace(/\/pulls.*$/, '').replace(/\/+$/, '');
+
+    // Handle full GitHub URL
+    if (cleanUrl.includes('github.com')) {
+      const match = cleanUrl.match(/github\.com\/([^\/]+)\/([^\/]+?)(?:\.git)?$/);
       if (!match) {
-        throw new Error(`Invalid GitHub repository URL: ${url}`);
+        throw new Error(`Invalid GitHub repository URL: ${url}. Expected format: https://github.com/owner/repo or owner/repo`);
       }
-      return { owner: match[1], repo: match[2].replace(/\.git$/, '') };
+      return { owner: match[1], repo: match[2] };
     }
 
     // Handle owner/repo format
-    const parts = url.split('/');
+    const parts = cleanUrl.split('/').filter(p => p.length > 0);
     if (parts.length !== 2) {
-      throw new Error(`Invalid repository format. Expected "owner/repo" or full URL`);
+      throw new Error(`Invalid repository format: "${url}". Expected "owner/repo" or "https://github.com/owner/repo"`);
     }
-    return { owner: parts[0], repo: parts[1] };
+    return { owner: parts[0], repo: parts[1].replace(/\.git$/, '') };
   }
 
   async getIssues(labels?: string[], limit?: number): Promise<Issue[]> {

@@ -171,9 +171,12 @@ export class BugFixerAgent {
     try {
       logger.info('Gathering repository context');
 
-      // Get key files
-      const filesToRead = ['package.json', 'README.md', 'tsconfig.json'];
-      const contextParts: string[] = [];
+      // Get root directory structure first
+      const rootContent = await this.github.getRepositoryContent('');
+      const contextParts: string[] = [`\n=== Repository Root ===\n${rootContent}`];
+
+      // Try to read common config files if they exist
+      const filesToRead = ['README.md', 'package.json', 'Cargo.toml', 'pyproject.toml', 'setup.py', 'go.mod', 'tsconfig.json'];
 
       for (const file of filesToRead) {
         try {
@@ -186,9 +189,18 @@ export class BugFixerAgent {
         }
       }
 
-      // Get directory structure
-      const srcContent = await this.github.getRepositoryContent('src');
-      contextParts.push(`\n=== Source Structure ===\n${srcContent}`);
+      // Try common source directories
+      const sourceDirs = ['src', 'lib', 'app', 'api', 'src/api'];
+      for (const dir of sourceDirs) {
+        try {
+          const dirContent = await this.github.getRepositoryContent(dir);
+          if (dirContent && !dirContent.includes('Not Found')) {
+            contextParts.push(`\n=== ${dir}/ Structure ===\n${dirContent.substring(0, 1000)}`);
+          }
+        } catch {
+          // Directory might not exist
+        }
+      }
 
       return contextParts.join('\n');
     } catch (error) {
