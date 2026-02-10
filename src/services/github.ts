@@ -3,6 +3,13 @@ import { config } from '../config';
 import { Issue, PullRequest } from '../types';
 import { logger } from '../utils/logger';
 
+// Use specialized logger for GitHub operations
+const ghLog = {
+  info: (msg: string, meta?: any) => logger.github(msg, meta),
+  warn: (msg: string, meta?: any) => logger.warn(msg, meta),
+  error: (msg: string, meta?: any) => logger.error(msg, meta),
+};
+
 // Octokit types
 type GitHubIssue = {
   number: number;
@@ -58,7 +65,7 @@ export class GitHubService {
 
   async getIssues(labels?: string[], limit?: number): Promise<Issue[]> {
     try {
-      logger.info(`Fetching issues for ${this.owner}/${this.repo}`, { labels: labels || 'all', limit: limit || 'unlimited' });
+      ghLog.info(`Fetching issues for ${this.owner}/${this.repo}`, { labels: labels || 'all', limit: limit || 'unlimited' });
 
       const params: any = {
         owner: this.owner,
@@ -96,14 +103,14 @@ export class GitHubService {
         },
       }));
     } catch (error) {
-      logger.error('Failed to fetch issues', { error, owner: this.owner, repo: this.repo });
+      ghLog.error('Failed to fetch issues', { error, owner: this.owner, repo: this.repo });
       throw error;
     }
   }
 
   async getIssue(issueNumber: number): Promise<Issue> {
     try {
-      logger.info(`Fetching issue #${issueNumber}`, { owner: this.owner, repo: this.repo });
+      ghLog.info(`Fetching issue #${issueNumber}`, { owner: this.owner, repo: this.repo });
 
       const { data } = await this.octokit.rest.issues.get({
         owner: this.owner,
@@ -127,14 +134,14 @@ export class GitHubService {
         },
       };
     } catch (error) {
-      logger.error('Failed to fetch issue', { error, issueNumber });
+      ghLog.error('Failed to fetch issue', { error, issueNumber });
       throw error;
     }
   }
 
   async getRepositoryContent(path: string, ref?: string): Promise<string> {
     try {
-      logger.info(`Fetching repository content`, { path, ref });
+      ghLog.info(`Fetching repository content`, { path, ref });
 
       const { data } = await this.octokit.rest.repos.getContent({
         owner: this.owner,
@@ -155,14 +162,14 @@ export class GitHubService {
 
       return '';
     } catch (error) {
-      logger.error('Failed to fetch repository content', { error, path });
+      ghLog.error('Failed to fetch repository content', { error, path });
       throw error;
     }
   }
 
   async getFileContent(filePath: string, ref?: string): Promise<string | null> {
     try {
-      logger.info(`Fetching file content`, { filePath, ref });
+      ghLog.info(`Fetching file content`, { filePath, ref });
 
       const { data } = await this.octokit.rest.repos.getContent({
         owner: this.owner,
@@ -172,7 +179,7 @@ export class GitHubService {
       });
 
       if (Array.isArray(data)) {
-        logger.warn(`Path is a directory, not a file`, { filePath });
+        ghLog.warn(`Path is a directory, not a file`, { filePath });
         return null;
       }
 
@@ -183,17 +190,17 @@ export class GitHubService {
       return null;
     } catch (error: any) {
       if (error.status === 404) {
-        logger.warn(`File not found`, { filePath });
+        ghLog.warn(`File not found`, { filePath });
         return null;
       }
-      logger.error('Failed to fetch file content', { error, filePath });
+      ghLog.error('Failed to fetch file content', { error, filePath });
       throw error;
     }
   }
 
   async createBranch(branchName: string, baseBranch: string = 'main'): Promise<void> {
     try {
-      logger.info(`Creating branch`, { branchName, baseBranch });
+      ghLog.info(`Creating branch`, { branchName, baseBranch });
 
       // Get the SHA of the base branch
       const { data: refData } = await this.octokit.rest.git.getRef({
@@ -210,9 +217,9 @@ export class GitHubService {
         sha: refData.object.sha,
       });
 
-      logger.info(`Branch created successfully`, { branchName });
+      ghLog.info(`Branch created successfully`, { branchName });
     } catch (error) {
-      logger.error('Failed to create branch', { error, branchName });
+      ghLog.error('Failed to create branch', { error, branchName });
       throw error;
     }
   }
@@ -225,7 +232,7 @@ export class GitHubService {
     sha?: string
   ): Promise<void> {
     try {
-      logger.info(`Updating file`, { filePath, branch });
+      ghLog.info(`Updating file`, { filePath, branch });
 
       // Get current file SHA if not provided
       let fileSha = sha;
@@ -263,9 +270,9 @@ export class GitHubService {
         sha: fileSha,
       });
 
-      logger.info(`File updated successfully`, { filePath });
+      ghLog.info(`File updated successfully`, { filePath });
     } catch (error) {
-      logger.error('Failed to update file', { error, filePath });
+      ghLog.error('Failed to update file', { error, filePath });
       throw error;
     }
   }
@@ -277,7 +284,7 @@ export class GitHubService {
     base: string = 'main'
   ): Promise<PullRequest> {
     try {
-      logger.info(`Creating pull request`, { title, head, base });
+      ghLog.info(`Creating pull request`, { title, head, base });
 
       const { data } = await this.octokit.rest.pulls.create({
         owner: this.owner,
@@ -296,14 +303,14 @@ export class GitHubService {
         url: data.html_url,
       };
     } catch (error) {
-      logger.error('Failed to create pull request', { error, title });
+      ghLog.error('Failed to create pull request', { error, title });
       throw error;
     }
   }
 
   async addCommentToIssue(issueNumber: number, body: string): Promise<void> {
     try {
-      logger.info(`Adding comment to issue #${issueNumber}`);
+      ghLog.info(`Adding comment to issue #${issueNumber}`);
 
       await this.octokit.rest.issues.createComment({
         owner: this.owner,
@@ -312,9 +319,9 @@ export class GitHubService {
         body,
       });
 
-      logger.info(`Comment added successfully`, { issueNumber });
+      ghLog.info(`Comment added successfully`, { issueNumber });
     } catch (error) {
-      logger.error('Failed to add comment', { error, issueNumber });
+      ghLog.error('Failed to add comment', { error, issueNumber });
       throw error;
     }
   }
@@ -328,7 +335,7 @@ export class GitHubService {
 
       return data.default_branch;
     } catch (error) {
-      logger.error('Failed to get default branch', { error });
+      ghLog.error('Failed to get default branch', { error });
       return 'main'; // Fallback
     }
   }

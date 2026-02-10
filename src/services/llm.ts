@@ -2,6 +2,13 @@ import { config } from '../config';
 import { FixProposal, Issue } from '../types';
 import { logger } from '../utils/logger';
 
+// Use specialized logger for LLM operations
+const llmLog = {
+  info: (msg: string, meta?: any) => logger.llm(msg, meta),
+  warn: (msg: string, meta?: any) => logger.warn(msg, meta),
+  error: (msg: string, meta?: any) => logger.error(msg, meta),
+};
+
 interface LLMMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -29,7 +36,7 @@ export class LLMService {
 
   async analyzeIssue(issue: Issue, repositoryContext: string): Promise<FixProposal | null> {
     try {
-      logger.info(`Analyzing issue #${issue.number}`, { title: issue.title });
+      llmLog.info(`Analyzing issue #${issue.number}`, { title: issue.title });
 
       const messages: LLMMessage[] = [
         {
@@ -66,7 +73,7 @@ Rules:
       const content = response.choices[0]?.message?.content;
 
       if (!content) {
-        logger.warn('Empty response from LLM');
+        llmLog.warn('Empty response from LLM');
         return null;
       }
 
@@ -77,7 +84,7 @@ Rules:
       const analysis = JSON.parse(jsonStr);
 
       if (!analysis.shouldFix || analysis.confidence < 70) {
-        logger.info(`Issue #${issue.number} skipped`, {
+        llmLog.info(`Issue #${issue.number} skipped`, {
           shouldFix: analysis.shouldFix,
           confidence: analysis.confidence,
         });
@@ -101,7 +108,7 @@ Rules:
         status: 'pending',
       };
 
-      logger.info(`Generated fix proposal`, {
+      llmLog.info(`Generated fix proposal`, {
         proposalId: proposal.id,
         issueNumber: issue.number,
         confidence: proposal.confidence,
@@ -109,14 +116,14 @@ Rules:
 
       return proposal;
     } catch (error) {
-      logger.error('Failed to analyze issue', { error, issueNumber: issue.number });
+      llmLog.error('Failed to analyze issue', { error, issueNumber: issue.number });
       return null;
     }
   }
 
   async validateFix(proposal: FixProposal, testOutput: string): Promise<boolean> {
     try {
-      logger.info(`Validating fix proposal`, { proposalId: proposal.id });
+      llmLog.info(`Validating fix proposal`, { proposalId: proposal.id });
 
       const messages: LLMMessage[] = [
         {
@@ -140,7 +147,7 @@ Rules:
       const validation = JSON.parse(jsonStr);
       return validation.isValid === true;
     } catch (error) {
-      logger.error('Failed to validate fix', { error, proposalId: proposal.id });
+      llmLog.error('Failed to validate fix', { error, proposalId: proposal.id });
       return false;
     }
   }

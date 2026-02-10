@@ -37,7 +37,7 @@ export class BugFixerAgent {
   async scanAndAnalyze(limit?: number): Promise<void> {
     try {
       const analysisLimit = limit || this.config.limit;
-      logger.info('🔍 Starting scan and analyze cycle', { limit: analysisLimit || 'unlimited' });
+      logger.scan('Starting scan and analyze cycle', { limit: analysisLimit || 'unlimited' });
 
       // Fetch issues (all issues if no labels specified, with optional limit)
       const issues = await this.github.getIssues(this.config.labels, analysisLimit);
@@ -47,9 +47,9 @@ export class BugFixerAgent {
         await this.processIssue(issue);
       }
 
-      logger.info('✅ Scan and analyze cycle completed');
+      logger.success('Scan and analyze cycle completed');
     } catch (error) {
-      logger.error('❌ Scan and analyze cycle failed', { error });
+      logger.error('Scan and analyze cycle failed', { error });
       throw error;
     }
   }

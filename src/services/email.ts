@@ -3,6 +3,14 @@ import { config } from '../config';
 import { FixProposal } from '../types';
 import { logger } from '../utils/logger';
 
+// Use specialized logger for Email operations
+const emailLog = {
+  info: (msg: string, meta?: any) => logger.email(msg, meta),
+  warn: (msg: string, meta?: any) => logger.warn(msg, meta),
+  error: (msg: string, meta?: any) => logger.error(msg, meta),
+  debug: (msg: string, meta?: any) => logger.debug(msg, meta),
+};
+
 export class EmailService {
   private transporter: nodemailer.Transporter;
 
@@ -18,7 +26,7 @@ export class EmailService {
     });
 
     // Debug logging
-    logger.debug('Email service configured', {
+    emailLog.debug('Email service configured', {
       host: config.email.host,
       port: config.email.port,
       user: config.email.user,
@@ -29,7 +37,7 @@ export class EmailService {
 
   async sendValidationEmail(proposal: FixProposal, repositoryUrl: string): Promise<void> {
     try {
-      logger.info(`Sending validation email`, { proposalId: proposal.id });
+      emailLog.info(`Sending validation email`, { proposalId: proposal.id });
 
       const approveUrl = `${config.app.validationUrl}/api/validate/${proposal.id}/approve`;
       const rejectUrl = `${config.app.validationUrl}/api/validate/${proposal.id}/reject`;
@@ -44,16 +52,16 @@ export class EmailService {
         text: this.generateEmailText(proposal, approveUrl, rejectUrl),
       });
 
-      logger.info(`Validation email sent successfully`, { proposalId: proposal.id });
+      emailLog.info(`Validation email sent successfully`, { proposalId: proposal.id });
     } catch (error) {
-      logger.error('Failed to send validation email', { error, proposalId: proposal.id });
+      emailLog.error('Failed to send validation email', { error, proposalId: proposal.id });
       throw error;
     }
   }
 
   async sendConfirmationEmail(proposal: FixProposal, prUrl: string, success: boolean): Promise<void> {
     try {
-      logger.info(`Sending confirmation email`, { proposalId: proposal.id, success });
+      emailLog.info(`Sending confirmation email`, { proposalId: proposal.id, success });
 
       const subject = success
         ? `[Bug Fixer] ✅ PR Created: ${proposal.title}`
@@ -75,19 +83,19 @@ export class EmailService {
         html: htmlContent,
       });
 
-      logger.info(`Confirmation email sent`, { proposalId: proposal.id, success });
+      emailLog.info(`Confirmation email sent`, { proposalId: proposal.id, success });
     } catch (error) {
-      logger.error('Failed to send confirmation email', { error, proposalId: proposal.id });
+      emailLog.error('Failed to send confirmation email', { error, proposalId: proposal.id });
     }
   }
 
   async verifyConnection(): Promise<boolean> {
     try {
       await this.transporter.verify();
-      logger.info('Email service connection verified');
+      emailLog.info('Email service connection verified');
       return true;
     } catch (error: any) {
-      logger.error('Email service connection failed', {
+      emailLog.error('Email service connection failed', {
         error: error.message,
         code: error.code,
         command: error.command,
