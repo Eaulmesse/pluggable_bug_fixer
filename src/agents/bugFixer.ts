@@ -69,8 +69,8 @@ export class BugFixerAgent {
   async analyzeSingleIssue(issue: Issue): Promise<FixProposal | null> {
     logger.info(`Processing issue #${issue.number}`, { title: issue.title });
 
-    // Get full repository context
-    const context = await this.getRepositoryContext();
+    // Get full repository context with issue context
+    const context = await this.gatherRepositoryContext(issue);
 
     // Analyze with LLM
     const result = await this.llm.analyzeIssue(issue, context);
@@ -102,8 +102,8 @@ export class BugFixerAgent {
    * Get full repository context for analysis
    * Public method for API endpoint
    */
-  async getRepositoryContext(): Promise<string> {
-    return this.gatherRepositoryContext();
+  async getRepositoryContext(issue?: Issue): Promise<string> {
+    return this.gatherRepositoryContext(issue);
   }
 
   async approveProposal(proposalId: string): Promise<void> {
@@ -192,38 +192,49 @@ export class BugFixerAgent {
     return this.proposals.get(proposalId);
   }
 
-  private async gatherRepositoryContext(): Promise<string> {
+  private async gatherRepositoryContext(issue?: Issue): Promise<string> {
     try {
-      logger.info('Gathering repository context');
+      logger.info('Gathering repository context', issue ? { issueNumber: issue.number } : undefined);
 
-      // Get root directory structure first
-      const rootContent = await this.github.getRepositoryContent('');
-      const contextParts: string[] = [`\n=== Repository Root ===\n${rootContent}`];
+      const contextParts: string[] = [];
 
-      // Try to read common config files if they exist
-      const filesToRead = ['README.md', 'package.json', 'Cargo.toml', 'pyproject.toml', 'setup.py', 'go.mod', 'tsconfig.json'];
-
-      for (const file of filesToRead) {
+      // 1. Get and read config files
+      const configFiles = ['README.md', 'package.json', 'Cargo.toml', 'pyproject.toml', 'setup.py', 'go.mod', 'tsconfig.json', 'requirements.txt'];
+      for (const file of configFiles) {
         try {
           const content = await this.github.getFileContent(file);
           if (content) {
-            contextParts.push(`\n=== ${file} ===\n${content.substring(0, 2000)}`);
+            contextParts.push(`\n=== ${file} ===\n${content.substring(0, 1500)}`);
           }
         } catch {
           // File might not exist
         }
       }
 
-      // Try common source directories
-      const sourceDirs = ['src', 'lib', 'app', 'api', 'src/api'];
-      for (const dir of sourceDirs) {
+      // 2. Get root structure to understand project layout
+      const rootContent = await this.github.getRepositoryContent('');
+      contextParts.push(`\n=== Repository Structure ===\n${rootContent}`);
+
+      // 3. Identify and read key source files
+      const filesToRead = await this.identifyRelevantFiles(rootContent, issue);
+      
+      logger.info(`Reading ${filesToRead.length} relevant source files`);
+
+      for (const filePath of filesToRead.slice(0, 15)) { // Limit to 15 files max
         try {
-          const dirContent = await this.github.getRepositoryContent(dir);
-          if (dirContent && !dirContent.includes('Not Found')) {
-            contextParts.push(`\n=== ${dir}/ Structure ===\n${dirContent.substring(0, 1000)}`);
+          const content = await this.github.getFileContent(filePath);
+          if (content) {
+            // Truncate large files, keeping beginning and end
+            let truncatedContent = content;
+            if (content.length > 3000) {
+              const beginning = content.substring(0, 1500);
+              const end = content.substring(content.length - 1000);
+              truncatedContent = `${beginning}\n\n... [${content.length - 2500} characters truncated] ...\n\n${end}`;
+            }
+            contextParts.push(`\n=== ${filePath} ===\n${truncatedContent}`);
           }
-        } catch {
-          // Directory might not exist
+        } catch (error) {
+          logger.warn(`Failed to read file: ${filePath}`);
         }
       }
 
@@ -232,6 +243,81 @@ export class BugFixerAgent {
       logger.error('Failed to gather repository context', { error });
       return 'Repository context unavailable';
     }
+  }
+
+  private async identifyRelevantFiles(rootContent: string, issue?: Issue): Promise<string[]> {
+    const files: string[] = [];
+    const lines = rootContent.split('\n');
+
+    // Extract file paths from root listing
+    const rootFiles = lines
+      .filter(line => line.startsWith('file:'))
+      .map(line => line.replace('file:', '').trim())
+      .filter(file => this.isSourceFile(file));
+
+    files.push(...rootFiles);
+
+    // Explore source directories
+    const sourceDirs = ['src', 'lib', 'app', 'api', 'core', 'models', 'controllers', 'handlers'];
+    
+    for (const dir of sourceDirs) {
+      try {
+        const dirContent = await this.github.getRepositoryContent(dir);
+        if (dirContent && !dirContent.includes('Not Found')) {
+          const dirFiles = dirContent
+            .split('\n')
+            .filter(line => line.startsWith('file:'))
+            .map(line => `${dir}/${line.replace('file:', '').trim()}`)
+            .filter(file => this.isSourceFile(file));
+          
+          files.push(...dirFiles);
+        }
+      } catch {
+        // Directory doesn't exist
+      }
+    }
+
+    // If we have an issue, try to find files mentioned in it
+    if (issue) {
+      const mentionedFiles = this.extractFileReferences(issue.title + ' ' + issue.body);
+      for (const mentionedFile of mentionedFiles) {
+        // Check if file exists in our list or try to fetch it
+        if (!files.includes(mentionedFile)) {
+          try {
+            const content = await this.github.getFileContent(mentionedFile);
+            if (content) {
+              files.unshift(mentionedFile); // Add to beginning (high priority)
+            }
+          } catch {
+            // File doesn't exist
+          }
+        }
+      }
+    }
+
+    return files;
+  }
+
+  private isSourceFile(filename: string): boolean {
+    const sourceExtensions = ['.rs', '.ts', '.js', '.py', '.go', '.java', '.cpp', '.c', '.h', '.hpp', '.cs', '.php', '.rb'];
+    return sourceExtensions.some(ext => filename.toLowerCase().endsWith(ext));
+  }
+
+  private extractFileReferences(text: string): string[] {
+    const patterns = [
+      /`([^`]+\.(?:rs|ts|js|py|go|java|cpp|c|h|hpp|cs|php|rb))`/g,  // `filename.rs`
+      /([\w\/]+\.(?:rs|ts|js|py|go|java|cpp|c|h|hpp|cs|php|rb))/g,   // path/to/file.rs
+    ];
+
+    const files: string[] = [];
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.exec(text)) !== null) {
+        files.push(match[1]);
+      }
+    }
+
+    return [...new Set(files)]; // Remove duplicates
   }
 
   private async prepareRepository(): Promise<void> {

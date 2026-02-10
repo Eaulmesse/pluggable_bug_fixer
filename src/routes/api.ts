@@ -120,25 +120,37 @@ router.post('/analyze', async (req, res) => {
   }
 });
 
-// NEW: Get full repository context
+// NEW: Get full repository context (optionally for a specific issue)
 router.get('/context', async (req, res) => {
   const repositoryUrl = req.query.repo as string;
+  const issueNumber = req.query.issue as string;
 
   if (!repositoryUrl) {
     return res.status(400).json({ error: 'Missing repository URL (?repo=owner/repo)' });
   }
 
   try {
-    logger.info(`📂 Fetching repository context`, { repository: repositoryUrl });
+    logger.info(`📂 Fetching repository context`, { repository: repositoryUrl, issue: issueNumber || 'none' });
 
     const agent = getOrCreateAgent(repositoryUrl);
-    const context = await agent.getRepositoryContext();
+    
+    // If issue number provided, fetch it and get contextualized repo context
+    let issue = undefined;
+    if (issueNumber) {
+      const github = createGitHubService(repositoryUrl);
+      issue = await github.getIssue(parseInt(issueNumber, 10));
+      logger.info(`Contextualizing for issue #${issueNumber}`, { title: issue.title });
+    }
+    
+    const context = await agent.getRepositoryContext(issue);
 
     res.json({
       success: true,
       repository: repositoryUrl,
+      issue: issueNumber ? { number: parseInt(issueNumber, 10), title: issue?.title } : undefined,
       context: context.substring(0, 10000), // Limit response size
       truncated: context.length > 10000,
+      totalSize: context.length,
     });
 
   } catch (error: any) {
