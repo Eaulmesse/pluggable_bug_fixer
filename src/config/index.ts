@@ -18,8 +18,8 @@ export const config: Config = {
   },
   llm: {
     apiKey: requireEnv('LLM_API_KEY'),
-    baseUrl: process.env.LLM_BASE_URL || 'https://api.opencode.ai/v1',
-    model: process.env.LLM_MODEL || 'kimi-k2.5',
+    baseUrl: process.env.LLM_BASE_URL || 'https://api.deepseek.com',
+    model: process.env.LLM_MODEL || 'deepseek-coder',
   },
   email: {
     host: requireEnv('EMAIL_HOST'),

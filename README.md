@@ -1,11 +1,11 @@
 # Pluggable Bug Fixer
 
-AI-powered GitHub bug fixer agent with manual validation. This agent monitors GitHub issues, analyzes them using LLM (Kimi K2.5), proposes code fixes, and creates Pull Requests only after manual email validation.
+AI-powered GitHub bug fixer agent with manual validation. This agent monitors GitHub issues, analyzes them using LLM (DeepSeek), proposes code fixes, and creates Pull Requests only after manual email validation.
 
 ## Features
 
 - **Automated Issue Monitoring**: Scans GitHub issues labeled with `bug` or `help wanted`
-- **AI-Powered Analysis**: Uses Kimi K2.5 to analyze issues and propose fixes
+- **AI-Powered Analysis**: Uses DeepSeek to analyze issues and propose fixes
 - **Manual Validation**: Sends email notifications with approve/reject links for every proposed fix
 - **Automated Testing**: Runs tests before creating PRs
 - **Safe Execution**: Local execution with full control
@@ -17,7 +17,7 @@ src/
 ├── config/         # Environment and configuration
 ├── services/       # Core services
 │   ├── github.ts   # GitHub API wrapper
-│   ├── llm.ts      # Kimi LLM client
+│   ├── llm.ts      # DeepSeek LLM client
 │   ├── email.ts    # Email notification service
 │   └── testRunner.ts # Test execution service
 ├── agents/         # AI agents
@@ -31,8 +31,8 @@ src/
 ## Workflow
 
 1. **Scan**: Fetch open issues with `bug` or `help wanted` labels
-2. **Analyze**: Send issue + repository context to Kimi LLM
-3. **Generate**: Kimi proposes fix with explanation
+2. **Analyze**: Send issue + repository context to DeepSeek LLM
+3. **Generate**: DeepSeek proposes fix with explanation
 4. **Validate**: Email notification with approve/reject links
 5. **Execute**: On approval → create branch, apply fix, run tests, create PR
 6. **Feedback**: Email confirmation
@@ -41,7 +41,7 @@ src/
 
 - Node.js >= 18.0.0
 - GitHub Personal Access Token
-- Kimi API Key (via opencode.ai)
+- DeepSeek API Key (https://platform.deepseek.com)
 - SMTP email credentials
 
 ## Installation
@@ -68,10 +68,10 @@ Create a `.env` file with the following variables:
 # GitHub
 GITHUB_TOKEN=ghp_your_github_token
 
-# LLM (Kimi via opencode.ai)
-LLM_API_KEY=your_opencode_api_key
-LLM_BASE_URL=https://api.opencode.ai/v1
-LLM_MODEL=kimi-k2.5
+# LLM (DeepSeek)
+LLM_API_KEY=your_deepseek_api_key
+LLM_BASE_URL=https://api.deepseek.com
+LLM_MODEL=deepseek-coder
 
 # Email (SMTP)
 EMAIL_HOST=smtp.gmail.com
