@@ -16,6 +16,15 @@ export class EmailService {
         pass: config.email.pass,
       },
     });
+
+    // Debug logging
+    logger.debug('Email service configured', {
+      host: config.email.host,
+      port: config.email.port,
+      user: config.email.user,
+      from: config.email.from,
+      to: config.email.to,
+    });
   }
 
   async sendValidationEmail(proposal: FixProposal, repositoryUrl: string): Promise<void> {
@@ -77,8 +86,13 @@ export class EmailService {
       await this.transporter.verify();
       logger.info('Email service connection verified');
       return true;
-    } catch (error) {
-      logger.error('Email service connection failed', { error });
+    } catch (error: any) {
+      logger.error('Email service connection failed', {
+        error: error.message,
+        code: error.code,
+        command: error.command,
+        response: error.response,
+      });
       return false;
     }
   }
