@@ -1,0 +1,213 @@
+import nodemailer from 'nodemailer';
+import { config } from '../config';
+import { FixProposal } from '../types';
+import { logger } from '../utils/logger';
+
+export class EmailService {
+  private transporter: nodemailer.Transporter;
+
+  constructor() {
+    this.transporter = nodemailer.createTransport({
+      host: config.email.host,
+      port: config.email.port,
+      secure: config.email.secure,
+      auth: {
+        user: config.email.user,
+        pass: config.email.pass,
+      },
+    });
+  }
+
+  async sendValidationEmail(proposal: FixProposal, repositoryUrl: string): Promise<void> {
+    try {
+      logger.info(`Sending validation email`, { proposalId: proposal.id });
+
+      const approveUrl = `${config.app.validationUrl}/api/validate/${proposal.id}/approve`;
+      const rejectUrl = `${config.app.validationUrl}/api/validate/${proposal.id}/reject`;
+
+      const htmlContent = this.generateEmailHtml(proposal, repositoryUrl, approveUrl, rejectUrl);
+
+      await this.transporter.sendMail({
+        from: config.email.from,
+        to: config.email.to,
+        subject: `[Bug Fixer] Validation Required: ${proposal.title}`,
+        html: htmlContent,
+        text: this.generateEmailText(proposal, approveUrl, rejectUrl),
+      });
+
+      logger.info(`Validation email sent successfully`, { proposalId: proposal.id });
+    } catch (error) {
+      logger.error('Failed to send validation email', { error, proposalId: proposal.id });
+      throw error;
+    }
+  }
+
+  async sendConfirmationEmail(proposal: FixProposal, prUrl: string, success: boolean): Promise<void> {
+    try {
+      logger.info(`Sending confirmation email`, { proposalId: proposal.id, success });
+
+      const subject = success
+        ? `[Bug Fixer] ✅ PR Created: ${proposal.title}`
+        : `[Bug Fixer] ❌ Failed: ${proposal.title}`;
+
+      const htmlContent = success
+        ? `<h2>✅ Pull Request Created Successfully</h2>
+           <p><strong>Issue:</strong> #${proposal.issueNumber} - ${proposal.title}</p>
+           <p><strong>PR URL:</strong> <a href="${prUrl}">${prUrl}</a></p>
+           <p>The fix has been applied and tests passed.</p>`
+        : `<h2>❌ Failed to Create Pull Request</h2>
+           <p><strong>Issue:</strong> #${proposal.issueNumber} - ${proposal.title}</p>
+           <p>There was an error while creating the PR. Please check the logs.</p>`;
+
+      await this.transporter.sendMail({
+        from: config.email.from,
+        to: config.email.to,
+        subject,
+        html: htmlContent,
+      });
+
+      logger.info(`Confirmation email sent`, { proposalId: proposal.id, success });
+    } catch (error) {
+      logger.error('Failed to send confirmation email', { error, proposalId: proposal.id });
+    }
+  }
+
+  async verifyConnection(): Promise<boolean> {
+    try {
+      await this.transporter.verify();
+      logger.info('Email service connection verified');
+      return true;
+    } catch (error) {
+      logger.error('Email service connection failed', { error });
+      return false;
+    }
+  }
+
+  private generateEmailHtml(
+    proposal: FixProposal,
+    repositoryUrl: string,
+    approveUrl: string,
+    rejectUrl: string
+  ): string {
+    const changesHtml = proposal.codeChanges
+      .map(
+        (change) => `
+        <div style="margin: 20px 0; border: 1px solid #ddd; border-radius: 5px;">
+          <div style="background: #f5f5f5; padding: 10px; border-bottom: 1px solid #ddd;">
+            <strong>📄 ${change.filePath}</strong>
+          </div>
+          <div style="padding: 10px;">
+            <p><em>${change.explanation}</em></p>
+            ${change.originalCode ? `
+            <div style="background: #ffe6e6; padding: 10px; margin: 10px 0; border-radius: 3px;">
+              <strong>Original:</strong>
+              <pre style="margin: 5px 0;"><code>${this.escapeHtml(change.originalCode)}</code></pre>
+            </div>
+            ` : ''}
+            <div style="background: #e6ffe6; padding: 10px; margin: 10px 0; border-radius: 3px;">
+              <strong>New Code:</strong>
+              <pre style="margin: 5px 0;"><code>${this.escapeHtml(change.newCode)}</code></pre>
+            </div>
+          </div>
+        </div>
+      `
+      )
+      .join('');
+
+    return `
+      <div style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto;">
+        <h1>🔧 Bug Fix Proposal</h1>
+        
+        <div style="background: #f0f8ff; padding: 15px; border-radius: 5px; margin: 20px 0;">
+          <h2>${proposal.title}</h2>
+          <p><strong>Repository:</strong> ${repositoryUrl}</p>
+          <p><strong>Issue:</strong> #${proposal.issueNumber}</p>
+          <p><strong>Confidence:</strong> ${proposal.confidence}%</p>
+        </div>
+
+        <h3>📝 Description</h3>
+        <p>${proposal.description}</p>
+
+        <h3>💻 Proposed Changes</h3>
+        ${changesHtml}
+
+        <div style="margin: 30px 0; padding: 20px; background: #fff3cd; border-radius: 5px; text-align: center;">
+          <h3>⚠️ Action Required</h3>
+          <p>Please review the proposed fix and choose an action:</p>
+          
+          <div style="margin: 20px 0;">
+            <a href="${approveUrl}" 
+               style="background: #28a745; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; margin: 0 10px; display: inline-block;">
+              ✅ Approve & Create PR
+            </a>
+            
+            <a href="${rejectUrl}" 
+               style="background: #dc3545; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; margin: 0 10px; display: inline-block;">
+              ❌ Reject
+            </a>
+          </div>
+          
+          <p style="font-size: 12px; color: #666;">
+            Or use curl:<br>
+            <code>curl -X POST ${approveUrl}</code><br>
+            <code>curl -X POST ${rejectUrl}</code>
+          </p>
+        </div>
+
+        <hr style="margin: 30px 0;">
+        <p style="font-size: 12px; color: #666;">
+          Proposal ID: ${proposal.id}<br>
+          Generated: ${proposal.createdAt.toISOString()}
+        </p>
+      </div>
+    `;
+  }
+
+  private generateEmailText(proposal: FixProposal, approveUrl: string, rejectUrl: string): string {
+    const changesText = proposal.codeChanges
+      .map(
+        (change) => `
+File: ${change.filePath}
+Explanation: ${change.explanation}
+${change.originalCode ? `Original:\n${change.originalCode}\n` : ''}
+New Code:\n${change.newCode}
+---
+`
+      )
+      .join('\n');
+
+    return `
+Bug Fix Proposal
+================
+
+Title: ${proposal.title}
+Issue: #${proposal.issueNumber}
+Confidence: ${proposal.confidence}%
+
+Description:
+${proposal.description}
+
+Proposed Changes:
+${changesText}
+
+Actions:
+- Approve: ${approveUrl}
+- Reject: ${rejectUrl}
+
+Proposal ID: ${proposal.id}
+`;
+  }
+
+  private escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+}
+
+export function createEmailService(): EmailService {
+  return new EmailService();
+}

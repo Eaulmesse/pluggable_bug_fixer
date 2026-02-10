@@ -9,6 +9,7 @@
     "dev": "nodemon src/index.ts",
     "test": "jest",
     "test:watch": "jest --watch",
+    "test:github": "ts-node src/test/github.test.ts",
     "lint": "eslint src/**/*.ts",
     "typecheck": "tsc --noEmit"
   },
