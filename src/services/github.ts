@@ -1,347 +1,46 @@
 import { Octokit } from 'octokit';
 import { config } from '../config';
-import { Issue, PullRequest } from '../types';
-import { logger } from '../utils/logger';
+import { Issue } from '../types';
 
-// Use specialized logger for GitHub operations
-const ghLog = {
-  info: (msg: string, meta?: any) => logger.github(msg, meta),
-  warn: (msg: string, meta?: any) => logger.warn(msg, meta),
-  error: (msg: string, meta?: any) => logger.error(msg, meta),
-};
+export async function getIssue(owner: string, repo: string, issueNumber: number): Promise<Issue> {
+  const octokit = new Octokit({ auth: config.github.token });
+  
+  const { data } = await octokit.rest.issues.get({ owner, repo, issue_number: issueNumber });
+  
+  return {
+    number: data.number,
+    title: data.title,
+    body: data.body || '',
+    labels: data.labels.map((l: any) => typeof l === 'string' ? l : l.name || ''),
+  };
+}
 
-// Octokit types
-type GitHubIssue = {
-  number: number;
-  title: string;
-  body: string | null;
-  labels: Array<string | { name?: string }>;
-  state: string;
-  created_at: string;
-  updated_at: string;
-  user: { login: string } | null;
-};
-
-type ContentItem = {
-  type: string;
-  path: string;
-};
-
-export class GitHubService {
-  private octokit: Octokit;
-  private owner: string;
-  private repo: string;
-
-  constructor(repositoryUrl: string) {
-    this.octokit = new Octokit({
-      auth: config.github.token,
-    });
-
-    const { owner, repo } = this.parseRepositoryUrl(repositoryUrl);
-    this.owner = owner;
-    this.repo = repo;
-  }
-
-  private parseRepositoryUrl(url: string): { owner: string; repo: string } {
-    // Clean URL - remove trailing paths like /issues, /pulls, etc.
-    const cleanUrl = url.replace(/\/issues.*$/, '').replace(/\/pulls.*$/, '').replace(/\/+$/, '');
-
-    // Handle full GitHub URL
-    if (cleanUrl.includes('github.com')) {
-      const match = cleanUrl.match(/github\.com\/([^\/]+)\/([^\/]+?)(?:\.git)?$/);
-      if (!match) {
-        throw new Error(`Invalid GitHub repository URL: ${url}. Expected format: https://github.com/owner/repo or owner/repo`);
-      }
-      return { owner: match[1], repo: match[2] };
+export async function getFileContent(owner: string, repo: string, path: string): Promise<string | null> {
+  const octokit = new Octokit({ auth: config.github.token });
+  
+  try {
+    const { data } = await octokit.rest.repos.getContent({ owner, repo, path });
+    
+    if ('content' in data && data.content) {
+      return Buffer.from(data.content, 'base64').toString('utf-8');
     }
-
-    // Handle owner/repo format
-    const parts = cleanUrl.split('/').filter(p => p.length > 0);
-    if (parts.length !== 2) {
-      throw new Error(`Invalid repository format: "${url}". Expected "owner/repo" or "https://github.com/owner/repo"`);
-    }
-    return { owner: parts[0], repo: parts[1].replace(/\.git$/, '') };
-  }
-
-  async getIssues(labels?: string[], limit?: number): Promise<Issue[]> {
-    try {
-      ghLog.info(`Fetching issues for ${this.owner}/${this.repo}`, { labels: labels || 'all', limit: limit || 'unlimited' });
-
-      const params: any = {
-        owner: this.owner,
-        repo: this.repo,
-        state: 'open',
-        sort: 'updated',
-        direction: 'desc',
-        per_page: limit || 100,  // GitHub max is 100 per page
-      };
-
-      // Only add labels filter if specified
-      if (labels && labels.length > 0) {
-        params.labels = labels.join(',');
-      }
-
-      let { data } = await this.octokit.rest.issues.listForRepo(params);
-
-      // Apply limit if specified
-      if (limit && limit < data.length) {
-        data = data.slice(0, limit);
-      }
-
-      return (data as GitHubIssue[]).map((issue: GitHubIssue) => ({
-        number: issue.number,
-        title: issue.title,
-        body: issue.body || '',
-        labels: issue.labels.map((label: string | { name?: string }) =>
-          typeof label === 'string' ? label : label.name || ''
-        ),
-        state: issue.state,
-        createdAt: new Date(issue.created_at),
-        updatedAt: new Date(issue.updated_at),
-        user: {
-          login: issue.user?.login || 'unknown',
-        },
-      }));
-    } catch (error) {
-      ghLog.error('Failed to fetch issues', { error, owner: this.owner, repo: this.repo });
-      throw error;
-    }
-  }
-
-  async getIssue(issueNumber: number): Promise<Issue> {
-    try {
-      ghLog.info(`Fetching issue #${issueNumber}`, { owner: this.owner, repo: this.repo });
-
-      const { data } = await this.octokit.rest.issues.get({
-        owner: this.owner,
-        repo: this.repo,
-        issue_number: issueNumber,
-      });
-
-      const issue = data as GitHubIssue;
-      return {
-        number: issue.number,
-        title: issue.title,
-        body: issue.body || '',
-        labels: issue.labels.map((label: string | { name?: string }) =>
-          typeof label === 'string' ? label : label.name || ''
-        ),
-        state: issue.state,
-        createdAt: new Date(issue.created_at),
-        updatedAt: new Date(issue.updated_at),
-        user: {
-          login: issue.user?.login || 'unknown',
-        },
-      };
-    } catch (error) {
-      ghLog.error('Failed to fetch issue', { error, issueNumber });
-      throw error;
-    }
-  }
-
-  async getRepositoryContent(path: string, ref?: string): Promise<string> {
-    try {
-      ghLog.info(`Fetching repository content`, { path, ref });
-
-      const { data } = await this.octokit.rest.repos.getContent({
-        owner: this.owner,
-        repo: this.repo,
-        path,
-        ref,
-      });
-
-      if (Array.isArray(data)) {
-        // It's a directory, return file list
-        return data.map((item: ContentItem) => `${item.type}: ${item.path}`).join('\n');
-      }
-
-      if ('content' in data && data.content) {
-        // It's a file, decode content
-        return Buffer.from(data.content, 'base64').toString('utf-8');
-      }
-
-      return '';
-    } catch (error) {
-      ghLog.error('Failed to fetch repository content', { error, path });
-      throw error;
-    }
-  }
-
-  async getFileContent(filePath: string, ref?: string): Promise<string | null> {
-    try {
-      ghLog.info(`Fetching file content`, { filePath, ref });
-
-      const { data } = await this.octokit.rest.repos.getContent({
-        owner: this.owner,
-        repo: this.repo,
-        path: filePath,
-        ref,
-      });
-
-      if (Array.isArray(data)) {
-        ghLog.warn(`Path is a directory, not a file`, { filePath });
-        return null;
-      }
-
-      if ('content' in data && data.content) {
-        return Buffer.from(data.content, 'base64').toString('utf-8');
-      }
-
-      return null;
-    } catch (error: any) {
-      if (error.status === 404) {
-        ghLog.warn(`File not found`, { filePath });
-        return null;
-      }
-      ghLog.error('Failed to fetch file content', { error, filePath });
-      throw error;
-    }
-  }
-
-  async createBranch(branchName: string, baseBranch: string = 'main'): Promise<void> {
-    try {
-      ghLog.info(`Creating branch`, { branchName, baseBranch });
-
-      // Get the SHA of the base branch
-      const { data: refData } = await this.octokit.rest.git.getRef({
-        owner: this.owner,
-        repo: this.repo,
-        ref: `heads/${baseBranch}`,
-      });
-
-      // Create new branch
-      await this.octokit.rest.git.createRef({
-        owner: this.owner,
-        repo: this.repo,
-        ref: `refs/heads/${branchName}`,
-        sha: refData.object.sha,
-      });
-
-      ghLog.info(`Branch created successfully`, { branchName });
-    } catch (error) {
-      ghLog.error('Failed to create branch', { error, branchName });
-      throw error;
-    }
-  }
-
-  async updateFile(
-    filePath: string,
-    content: string,
-    message: string,
-    branch: string,
-    sha?: string
-  ): Promise<void> {
-    try {
-      ghLog.info(`Updating file`, { filePath, branch });
-
-      // Get current file SHA if not provided
-      let fileSha = sha;
-      if (!fileSha) {
-        try {
-          const { data } = await this.octokit.rest.repos.getContent({
-            owner: this.owner,
-            repo: this.repo,
-            path: filePath,
-            ref: branch,
-          });
-
-          if (!Array.isArray(data) && 'sha' in data) {
-            fileSha = data.sha;
-          }
-        } catch (error: any) {
-          if (error.status !== 404) {
-            throw error;
-          }
-          // File doesn't exist, will create new
-        }
-      }
-
-      // Encode content to base64
-      const contentBase64 = Buffer.from(content).toString('base64');
-
-      // Create or update file
-      await this.octokit.rest.repos.createOrUpdateFileContents({
-        owner: this.owner,
-        repo: this.repo,
-        path: filePath,
-        message,
-        content: contentBase64,
-        branch,
-        sha: fileSha,
-      });
-
-      ghLog.info(`File updated successfully`, { filePath });
-    } catch (error) {
-      ghLog.error('Failed to update file', { error, filePath });
-      throw error;
-    }
-  }
-
-  async createPullRequest(
-    title: string,
-    body: string,
-    head: string,
-    base: string = 'main'
-  ): Promise<PullRequest> {
-    try {
-      ghLog.info(`Creating pull request`, { title, head, base });
-
-      const { data } = await this.octokit.rest.pulls.create({
-        owner: this.owner,
-        repo: this.repo,
-        title,
-        body,
-        head,
-        base,
-      });
-
-      return {
-        number: data.number,
-        title: data.title,
-        body: data.body || '',
-        branch: head,
-        url: data.html_url,
-      };
-    } catch (error) {
-      ghLog.error('Failed to create pull request', { error, title });
-      throw error;
-    }
-  }
-
-  async addCommentToIssue(issueNumber: number, body: string): Promise<void> {
-    try {
-      ghLog.info(`Adding comment to issue #${issueNumber}`);
-
-      await this.octokit.rest.issues.createComment({
-        owner: this.owner,
-        repo: this.repo,
-        issue_number: issueNumber,
-        body,
-      });
-
-      ghLog.info(`Comment added successfully`, { issueNumber });
-    } catch (error) {
-      ghLog.error('Failed to add comment', { error, issueNumber });
-      throw error;
-    }
-  }
-
-  async getDefaultBranch(): Promise<string> {
-    try {
-      const { data } = await this.octokit.rest.repos.get({
-        owner: this.owner,
-        repo: this.repo,
-      });
-
-      return data.default_branch;
-    } catch (error) {
-      ghLog.error('Failed to get default branch', { error });
-      return 'main'; // Fallback
-    }
+    return null;
+  } catch {
+    return null;
   }
 }
 
-// Factory function for creating service instances
-export function createGitHubService(repositoryUrl: string): GitHubService {
-  return new GitHubService(repositoryUrl);
+export async function getDirectoryContents(owner: string, repo: string, path: string): Promise<{ name: string; type: string; path: string }[]> {
+  const octokit = new Octokit({ auth: config.github.token });
+  
+  try {
+    const { data } = await octokit.rest.repos.getContent({ owner, repo, path });
+    
+    if (Array.isArray(data)) {
+      return data.map((item: any) => ({ name: item.name, type: item.type, path: item.path }));
+    }
+    return [];
+  } catch {
+    return [];
+  }
 }

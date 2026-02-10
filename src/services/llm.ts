@@ -1,206 +1,94 @@
 import { config } from '../config';
-import { FixProposal, Issue, AnalysisResult } from '../types';
-import { logger } from '../utils/logger';
+import { Issue, AnalysisResult } from '../types';
+import { logger } from '../logger';
 
-// Use specialized logger for LLM operations
-const llmLog = {
-  info: (msg: string, meta?: any) => logger.llm(msg, meta),
-  warn: (msg: string, meta?: any) => logger.warn(msg, meta),
-  error: (msg: string, meta?: any) => logger.error(msg, meta),
-};
+export async function analyzeIssue(issue: Issue, codeContext: string): Promise<AnalysisResult> {
+  logger.info(`Analyzing issue #${issue.number}`);
 
-interface LLMMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-}
+  const prompt = `You are an expert code reviewer. Analyze this GitHub issue and the provided code context.
 
-interface LLMResponse {
-  id: string;
-  choices: Array<{
-    message: {
-      content: string;
-    };
-  }>;
-}
+ISSUE #${issue.number}: ${issue.title}
 
-export class LLMService {
-  private apiKey: string;
-  private baseUrl: string;
-  private model: string;
+DESCRIPTION:
+${issue.body}
 
-  constructor() {
-    this.apiKey = config.llm.apiKey;
-    this.baseUrl = config.llm.baseUrl;
-    this.model = config.llm.model;
-  }
+CODE CONTEXT:
+${codeContext}
 
-  async analyzeIssue(issue: Issue, repositoryContext: string): Promise<AnalysisResult> {
-    try {
-      llmLog.info(`Analyzing issue #${issue.number}`, { title: issue.title });
+TASK:
+Determine if this issue can be automatically fixed. Consider:
+1. Is it a bug (not a feature request)?
+2. Do you have enough context from the code to propose a fix?
+3. Are the relevant files provided in the context?
 
-      const messages: LLMMessage[] = [
-        {
-          role: 'system',
-          content: `You are an expert code reviewer and bug fixer. Analyze GitHub issues and propose concrete code fixes.
-
-Rules:
-1. Only propose fixes if you're confident about the solution
-2. Always explain WHY you can or cannot fix the issue
-3. If it's a feature request (not a bug), explain why no code fix is needed
-4. If confidence is low, explain what information is missing
-5. Return response in this JSON format:
+Respond in JSON format:
 {
   "shouldFix": boolean,
   "confidence": number (0-100),
-  "reason": "Detailed explanation of why this can or cannot be fixed automatically",
-  "title": "Brief fix title (only if shouldFix=true)",
-  "description": "Detailed explanation (only if shouldFix=true)",
+  "reason": "Detailed explanation of why this can or cannot be fixed",
+  "title": "Brief fix title (if shouldFix=true)",
+  "description": "Detailed explanation of the fix (if shouldFix=true)",
   "codeChanges": [
     {
       "filePath": "path/to/file",
-      "explanation": "Why this change is needed",
-      "originalCode": "code to replace (can be empty for new files)",
+      "explanation": "Why this change fixes the issue",
+      "originalCode": "exact code to find and replace",
       "newCode": "new code to insert"
     }
   ]
-}`,
-        },
-        {
-          role: 'user',
-          content: `Repository Context:\n${repositoryContext}\n\nIssue #${issue.number}: ${issue.title}\n\n${issue.body}`,
-        },
-      ];
+}
 
-      const response = await this.callLLM(messages);
-      const content = response.choices[0]?.message?.content;
+Only set shouldFix=true if:
+- It's clearly a bug
+- You can see the relevant code in the context
+- You're confident about the fix (confidence >= 70)
 
-      if (!content) {
-        llmLog.warn('Empty response from LLM');
-        return {
-          shouldFix: false,
-          confidence: 0,
-          reason: 'Failed to get response from AI model',
-        };
-      }
+If code is missing or it's a feature request, explain what's needed in the "reason" field.`;
 
-      // Extract JSON from response (handle markdown code blocks)
-      const jsonMatch = content.match(/```json\n?([\s\S]*?)\n?```/) || content.match(/({[\s\S]*})/);
-      const jsonStr = jsonMatch ? jsonMatch[1] : content;
-
-      const analysis = JSON.parse(jsonStr);
-
-      // If not confident enough or shouldn't fix, return with reason
-      if (!analysis.shouldFix || analysis.confidence < 70) {
-        llmLog.info(`Issue #${issue.number} skipped`, {
-          shouldFix: analysis.shouldFix,
-          confidence: analysis.confidence,
-          reason: analysis.reason,
-        });
-        return {
-          shouldFix: false,
-          confidence: analysis.confidence || 0,
-          reason: analysis.reason || 'No fix proposed - insufficient confidence or not a bug',
-        };
-      }
-
-      const proposal: FixProposal = {
-        id: this.generateProposalId(),
-        issueNumber: issue.number,
-        title: analysis.title,
-        description: analysis.description,
-        codeChanges: analysis.codeChanges.map((change: any) => ({
-          filePath: change.filePath,
-          originalCode: change.originalCode || '',
-          newCode: change.newCode,
-          explanation: change.explanation,
-        })),
-        explanation: analysis.description,
-        confidence: analysis.confidence,
-        createdAt: new Date(),
-        status: 'pending',
-      };
-
-      llmLog.info(`Generated fix proposal`, {
-        proposalId: proposal.id,
-        issueNumber: issue.number,
-        confidence: proposal.confidence,
-      });
-
-      return {
-        shouldFix: true,
-        confidence: analysis.confidence,
-        reason: analysis.reason || 'Fix proposed with high confidence',
-        proposal,
-      };
-    } catch (error) {
-      llmLog.error('Failed to analyze issue', { error, issueNumber: issue.number });
-      return {
-        shouldFix: false,
-        confidence: 0,
-        reason: `Error during analysis: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      };
-    }
-  }
-
-  async validateFix(proposal: FixProposal, testOutput: string): Promise<boolean> {
-    try {
-      llmLog.info(`Validating fix proposal`, { proposalId: proposal.id });
-
-      const messages: LLMMessage[] = [
-        {
-          role: 'system',
-          content: `You are a code reviewer. Review the proposed fix and test results. Respond with JSON: { "isValid": boolean, "reason": "explanation" }`,
-        },
-        {
-          role: 'user',
-          content: `Fix: ${proposal.title}\nChanges: ${JSON.stringify(proposal.codeChanges)}\n\nTest Results:\n${testOutput}`,
-        },
-      ];
-
-      const response = await this.callLLM(messages);
-      const content = response.choices[0]?.message?.content;
-
-      if (!content) return false;
-
-      const jsonMatch = content.match(/```json\n?([\s\S]*?)\n?```/) || content.match(/({[\s\S]*})/);
-      const jsonStr = jsonMatch ? jsonMatch[1] : content;
-
-      const validation = JSON.parse(jsonStr);
-      return validation.isValid === true;
-    } catch (error) {
-      llmLog.error('Failed to validate fix', { error, proposalId: proposal.id });
-      return false;
-    }
-  }
-
-  private async callLLM(messages: LLMMessage[]): Promise<LLMResponse> {
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+  try {
+    const response = await fetch(`${config.llm.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`,
+        'Authorization': `Bearer ${config.llm.apiKey}`,
       },
       body: JSON.stringify({
-        model: this.model,
-        messages,
+        model: config.llm.model,
+        messages: [{ role: 'user', content: prompt }],
         temperature: 0.2,
-        max_tokens: 4096,
+        max_tokens: 4000,
       }),
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`LLM API error: ${response.status} - ${errorText}`);
+      throw new Error(`LLM API error: ${response.status}`);
     }
 
-    return response.json() as Promise<LLMResponse>;
-  }
+    const data: any = await response.json();
+    const content = data.choices[0]?.message?.content;
 
-  private generateProposalId(): string {
-    return `prop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  }
-}
+    if (!content) {
+      return { shouldFix: false, confidence: 0, reason: 'Empty response from LLM' };
+    }
 
-export function createLLMService(): LLMService {
-  return new LLMService();
+    // Extract JSON
+    const jsonMatch = content.match(/```json\n?([\s\S]*?)\n?```/) || content.match(/({[\s\S]*})/);
+    const result = JSON.parse(jsonMatch ? jsonMatch[1] : content);
+
+    return {
+      shouldFix: result.shouldFix && result.confidence >= 70,
+      confidence: result.confidence || 0,
+      reason: result.reason || 'No reason provided',
+      title: result.title,
+      description: result.description,
+      codeChanges: result.codeChanges,
+    };
+  } catch (error) {
+    logger.error('Analysis failed', error);
+    return { 
+      shouldFix: false, 
+      confidence: 0, 
+      reason: `Analysis error: ${error instanceof Error ? error.message : 'Unknown'}` 
+    };
+  }
 }
