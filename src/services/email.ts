@@ -1,6 +1,6 @@
 import nodemailer from 'nodemailer';
 import { config } from '../config';
-import { FixProposal } from '../types';
+import { FixProposal, Issue } from '../types';
 import { logger } from '../utils/logger';
 
 // Use specialized logger for Email operations
@@ -86,6 +86,86 @@ export class EmailService {
       emailLog.info(`Confirmation email sent`, { proposalId: proposal.id, success });
     } catch (error) {
       emailLog.error('Failed to send confirmation email', { error, proposalId: proposal.id });
+    }
+  }
+
+  async sendNoFixEmail(issue: Issue, repositoryUrl: string, reason: string): Promise<void> {
+    try {
+      emailLog.info(`Sending no-fix explanation email`, { issueNumber: issue.number });
+
+      const htmlContent = `
+        <div style="font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto;">
+          <h1>📋 Issue Analysis - No Fix Proposed</h1>
+          
+          <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 5px solid #ffc107;">
+            <h2>⚠️ Analysis Complete</h2>
+            <p><strong>Repository:</strong> ${repositoryUrl}</p>
+            <p><strong>Issue:</strong> #${issue.number} - ${issue.title}</p>
+          </div>
+
+          <div style="background: #f8f9fa; padding: 20px; border-radius: 5px; margin: 20px 0;">
+            <h3>🤔 Why no fix was proposed?</h3>
+            <p style="font-size: 16px; line-height: 1.6;">${reason}</p>
+          </div>
+
+          <div style="background: #e9ecef; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <h4>📖 Issue Details</h4>
+            <pre style="background: white; padding: 10px; border-radius: 3px; overflow-x: auto;">${this.escapeHtml(issue.body || 'No description provided')}</pre>
+          </div>
+
+          <div style="margin: 30px 0; padding: 15px; background: #d1ecf1; border-radius: 5px;">
+            <p style="margin: 0;"><strong>💡 What you can do:</strong></p>
+            <ul>
+              <li>If you think this is a bug, add more details to the issue</li>
+              <li>Check if the issue has the correct labels (bug, critical, etc.)</li>
+              <li>Provide code examples or error messages</li>
+              <li>Link to related files or commits</li>
+            </ul>
+          </div>
+
+          <hr style="margin: 30px 0;">
+          <p style="font-size: 12px; color: #666;">
+            Issue: <a href="${repositoryUrl}/issues/${issue.number}">#${issue.number}</a><br>
+            Analyzed: ${new Date().toISOString()}
+          </p>
+        </div>
+      `;
+
+      const textContent = `
+Issue Analysis - No Fix Proposed
+=================================
+
+Repository: ${repositoryUrl}
+Issue #${issue.number}: ${issue.title}
+
+Why no fix was proposed?
+${reason}
+
+Issue Details:
+${issue.body || 'No description provided'}
+
+What you can do:
+- If you think this is a bug, add more details to the issue
+- Check if the issue has the correct labels (bug, critical, etc.)
+- Provide code examples or error messages
+- Link to related files or commits
+
+Issue: ${repositoryUrl}/issues/${issue.number}
+Analyzed: ${new Date().toISOString()}
+`;
+
+      await this.transporter.sendMail({
+        from: config.email.from,
+        to: config.email.to,
+        subject: `[Bug Fixer] No Fix Proposed: ${issue.title.substring(0, 50)}${issue.title.length > 50 ? '...' : ''}`,
+        html: htmlContent,
+        text: textContent,
+      });
+
+      emailLog.info(`No-fix email sent successfully`, { issueNumber: issue.number });
+    } catch (error) {
+      emailLog.error('Failed to send no-fix email', { error, issueNumber: issue.number });
+      throw error;
     }
   }
 

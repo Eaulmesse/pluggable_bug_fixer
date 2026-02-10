@@ -1,5 +1,5 @@
 import { config } from '../config';
-import { FixProposal, Issue } from '../types';
+import { FixProposal, Issue, AnalysisResult } from '../types';
 import { logger } from '../utils/logger';
 
 // Use specialized logger for LLM operations
@@ -34,7 +34,7 @@ export class LLMService {
     this.model = config.llm.model;
   }
 
-  async analyzeIssue(issue: Issue, repositoryContext: string): Promise<FixProposal | null> {
+  async analyzeIssue(issue: Issue, repositoryContext: string): Promise<AnalysisResult> {
     try {
       llmLog.info(`Analyzing issue #${issue.number}`, { title: issue.title });
 
@@ -45,14 +45,16 @@ export class LLMService {
 
 Rules:
 1. Only propose fixes if you're confident about the solution
-2. Provide clear explanations
-3. Include actual code changes with file paths
-4. Return response in this JSON format:
+2. Always explain WHY you can or cannot fix the issue
+3. If it's a feature request (not a bug), explain why no code fix is needed
+4. If confidence is low, explain what information is missing
+5. Return response in this JSON format:
 {
   "shouldFix": boolean,
   "confidence": number (0-100),
-  "title": "Brief fix title",
-  "description": "Detailed explanation",
+  "reason": "Detailed explanation of why this can or cannot be fixed automatically",
+  "title": "Brief fix title (only if shouldFix=true)",
+  "description": "Detailed explanation (only if shouldFix=true)",
   "codeChanges": [
     {
       "filePath": "path/to/file",
@@ -74,7 +76,11 @@ Rules:
 
       if (!content) {
         llmLog.warn('Empty response from LLM');
-        return null;
+        return {
+          shouldFix: false,
+          confidence: 0,
+          reason: 'Failed to get response from AI model',
+        };
       }
 
       // Extract JSON from response (handle markdown code blocks)
@@ -83,12 +89,18 @@ Rules:
 
       const analysis = JSON.parse(jsonStr);
 
+      // If not confident enough or shouldn't fix, return with reason
       if (!analysis.shouldFix || analysis.confidence < 70) {
         llmLog.info(`Issue #${issue.number} skipped`, {
           shouldFix: analysis.shouldFix,
           confidence: analysis.confidence,
+          reason: analysis.reason,
         });
-        return null;
+        return {
+          shouldFix: false,
+          confidence: analysis.confidence || 0,
+          reason: analysis.reason || 'No fix proposed - insufficient confidence or not a bug',
+        };
       }
 
       const proposal: FixProposal = {
@@ -114,10 +126,19 @@ Rules:
         confidence: proposal.confidence,
       });
 
-      return proposal;
+      return {
+        shouldFix: true,
+        confidence: analysis.confidence,
+        reason: analysis.reason || 'Fix proposed with high confidence',
+        proposal,
+      };
     } catch (error) {
       llmLog.error('Failed to analyze issue', { error, issueNumber: issue.number });
-      return null;
+      return {
+        shouldFix: false,
+        confidence: 0,
+        reason: `Error during analysis: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      };
     }
   }
 

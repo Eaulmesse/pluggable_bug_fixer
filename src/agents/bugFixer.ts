@@ -73,12 +73,19 @@ export class BugFixerAgent {
     const context = await this.getRepositoryContext();
 
     // Analyze with LLM
-    const proposal = await this.llm.analyzeIssue(issue, context);
+    const result = await this.llm.analyzeIssue(issue, context);
 
-    if (!proposal) {
-      logger.info(`No fix proposed for issue #${issue.number}`);
+    // If no fix proposed, send explanation email
+    if (!result.shouldFix || !result.proposal) {
+      logger.info(`No fix proposed for issue #${issue.number}`, { reason: result.reason });
+      
+      // Send email explaining why no fix was proposed
+      await this.email.sendNoFixEmail(issue, this.config.repositoryUrl, result.reason);
+      
       return null;
     }
+
+    const proposal = result.proposal;
 
     // Store proposal
     this.proposals.set(proposal.id, proposal);

@@ -49,6 +49,13 @@ export interface FixProposal {
   status: 'pending' | 'approved' | 'rejected' | 'applied';
 }
 
+export interface AnalysisResult {
+  shouldFix: boolean;
+  confidence: number;
+  reason: string;
+  proposal?: FixProposal;
+}
+
 export interface CodeChange {
   filePath: string;
   originalCode: string;
