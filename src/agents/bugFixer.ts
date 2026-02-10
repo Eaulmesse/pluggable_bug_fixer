@@ -14,8 +14,8 @@ const execAsync = promisify(exec);
 interface BugFixerConfig {
   repositoryUrl: string;
   workingDir: string;
-  labels?: string[];  // Optional - if not set, fetch all issues
-  limit?: number;     // Optional - max number of issues to analyze (default: all)
+  labels?: string[];  // Optional - for legacy scan mode
+  limit?: number;     // Optional - for legacy scan mode
 }
 
 export class BugFixerAgent {
@@ -56,29 +56,47 @@ export class BugFixerAgent {
 
   private async processIssue(issue: Issue): Promise<void> {
     try {
-      logger.info(`Processing issue #${issue.number}`, { title: issue.title });
-
-      // Get repository context
-      const context = await this.gatherRepositoryContext();
-
-      // Analyze with LLM
-      const proposal = await this.llm.analyzeIssue(issue, context);
-
-      if (!proposal) {
-        logger.info(`No fix proposed for issue #${issue.number}`);
-        return;
-      }
-
-      // Store proposal
-      this.proposals.set(proposal.id, proposal);
-
-      // Send validation email
-      await this.email.sendValidationEmail(proposal, this.config.repositoryUrl);
-
-      logger.info(`Proposal ${proposal.id} created for issue #${issue.number}`);
+      await this.analyzeSingleIssue(issue);
     } catch (error) {
       logger.error(`Failed to process issue #${issue.number}`, { error });
     }
+  }
+
+  /**
+   * Analyze a single issue with full repository context
+   * Public method for API endpoint
+   */
+  async analyzeSingleIssue(issue: Issue): Promise<FixProposal | null> {
+    logger.info(`Processing issue #${issue.number}`, { title: issue.title });
+
+    // Get full repository context
+    const context = await this.getRepositoryContext();
+
+    // Analyze with LLM
+    const proposal = await this.llm.analyzeIssue(issue, context);
+
+    if (!proposal) {
+      logger.info(`No fix proposed for issue #${issue.number}`);
+      return null;
+    }
+
+    // Store proposal
+    this.proposals.set(proposal.id, proposal);
+
+    // Send validation email
+    await this.email.sendValidationEmail(proposal, this.config.repositoryUrl);
+
+    logger.success(`Proposal ${proposal.id} created for issue #${issue.number}`);
+    
+    return proposal;
+  }
+
+  /**
+   * Get full repository context for analysis
+   * Public method for API endpoint
+   */
+  async getRepositoryContext(): Promise<string> {
+    return this.gatherRepositoryContext();
   }
 
   async approveProposal(proposalId: string): Promise<void> {
